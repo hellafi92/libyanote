@@ -1,19 +1,3 @@
-<!-- libyanote-ticker.html
-
-وصف:
-ملف HTML جاهز لوضعه على GitHub Pages (github.io) ليعرض سعر عملة "Libyanote" كنص يتحدّث مباشرة (polling).
-
-كيفية الاستخدام السريع:
-1. ضع هذا الملف في مستودع GitHub Pages (مثلاً في الفرع main ل repo username.github.io).
-2. افتح الملف عبر https://<username>.github.io/libyanote-ticker.html
-3. **تعديل مصدر السعر:**
-   - إن كانت العملة متاحة على CoinGecko، ضع قيمة `COINGECKO_ID` (مثل 'bitcoin') وسيجلب الملف السعر من CoinGecko.
-   - إن كان لديك API خاص يرجع JSON مثل { "price_usd": 0.12 }, غيّر `fetchPriceFromCustomApi()` لتتوافق مع ال JSON الخاص بك.
-
-التحديث الافتراضي: كل 5 ثواني (قابل للتعديل في المتغير `POLL_INTERVAL_MS`).
-
--->
-
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -47,13 +31,10 @@
   </div>
 
 <script>
-// إعدادات
+// الإعدادات
 const POLL_INTERVAL_MS = 5000; // كل 5 ثواني
-const USE_COINGECKO = true; // اذا كانت العملة مسجلة على CoinGecko ضع true
-const COINGECKO_ID = 'libyanote'; // غيّر هذا إلى معرف العملة في CoinGecko اذا وجد
-
-// بديل: عنوان API خاص يرجع JSON مع سعر بالدولار
-const CUSTOM_API_URL = 'https://example.com/api/libyanote/price'; // غيره إلى API الخاص بك
+const CHAIN_ID = 'bsc'; // غيّر إلى السلسلة المناسبة (مثال: 'ethereum' أو 'bsc')
+const CONTRACT = '0x1eE4a6e9ee95a93243A37492e82d5bD1690f2588'.toLowerCase();
 
 // عناصر الصفحة
 const priceEl = document.getElementById('price');
@@ -62,61 +43,49 @@ const statusEl = document.getElementById('status');
 
 let lastPrice = null;
 
-async function fetchPriceFromCoinGecko() {
-  try {
-    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(COINGECKO_ID)}&vs_currencies=usd&include_24hr_change=true`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('CoinGecko response not OK');
-    const data = await res.json();
-    if (!data[COINGECKO_ID] || !data[COINGECKO_ID].usd) throw new Error('CoinGecko: data not found for id');
-    return { price: data[COINGECKO_ID].usd, change24h: data[COINGECKO_ID].usd_24h_change };
-  } catch (e) {
-    console.warn('CoinGecko fetch failed:', e);
-    throw e;
+async function fetchDexScreenerPrice() {
+  // نستخدم endpoint /token-pairs/v1 أو /tokens/v1 حسب الوثائق
+  // نطلب جميع أزواج تحتوي على هذا الرمز
+  const url = `https://api.dexscreener.com/token-pairs/v1/${CHAIN_ID}/${CONTRACT}`;
+  // أو ربما: https://api.dexscreener.com/tokens/v1/${CHAIN_ID}/${CONTRACT}
+  // جرب أي منهما إذا لم ينجح
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error('DexScreener HTTP error');
   }
+  const data = await res.json();
+  // التحقق إن البيانات صحيحة
+  if (!data || !data.pairs || data.pairs.length === 0) {
+    throw new Error('No pairs found');
+  }
+  // نأخذ الزوج الأول على الأقل
+  const pair = data.pairs[0];
+  const priceUsd = parseFloat(pair.priceUsd);
+  const priceChange = parseFloat(pair.priceChange?.usd ?? pair.priceChange);
+  return { price: priceUsd, change24h: priceChange };
 }
 
-async function fetchPriceFromCustomApi() {
-  // عدّل هذا الجزء ليتوافق مع صيغة JSON ل API عندك
-  try {
-    const res = await fetch(CUSTOM_API_URL);
-    if (!res.ok) throw new Error('Custom API not OK');
-    const data = await res.json();
-    // مثال متوقع: { "price_usd": 0.12, "change_24h": 1.5 }
-    return { price: Number(data.price_usd), change24h: Number(data.change_24h) };
-  } catch (e) {
-    console.warn('Custom API fetch failed:', e);
-    throw e;
-  }
-}
-
-function formatUsd(v){
+function formatUsd(v) {
   if (v === null || v === undefined || isNaN(v)) return '--- USD';
   if (v >= 1) return '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-  return '$' + Number(v).toFixed(6); // عملات صغيرة
+  return '$' + Number(v).toFixed(6);
 }
 
-function formatChange(v){
+function formatChange(v) {
   if (v === null || v === undefined || isNaN(v)) return '—';
   const sign = v >= 0 ? '+' : '';
-  return `${sign}${Number(v).toFixed(2)}% (24h)`;
+  return `${sign}${v.toFixed(2)}% (24h)`;
 }
 
 async function update() {
   statusEl.textContent = 'جاري التحديث...';
   try {
-    let res;
-    if (USE_COINGECKO) {
-      res = await fetchPriceFromCoinGecko();
-    } else {
-      res = await fetchPriceFromCustomApi();
-    }
-    const { price, change24h } = res;
-    priceEl.textContent = formatUsd(price) + ' USD';
+    const { price, change24h } = await fetchDexScreenerPrice();
+    priceEl.textContent = formatUsd(price);
     changeEl.textContent = formatChange(change24h);
     statusEl.textContent = 'مباشر';
 
-    // تلوين مؤقت للزيادة/النقصان
+    // تغيير اللون حسب الاتجاه
     if (lastPrice !== null) {
       if (price > lastPrice) {
         priceEl.style.color = 'green';
@@ -128,6 +97,7 @@ async function update() {
     }
     lastPrice = price;
   } catch (e) {
+    console.warn('Error fetching price:', e);
     statusEl.textContent = 'خطأ في الاتصال';
     priceEl.textContent = '--- USD';
     changeEl.textContent = '—';
